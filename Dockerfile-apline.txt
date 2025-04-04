@@ -1,0 +1,49 @@
+FROM golang:1.24.2-alpine3.21
+
+# 安装必要的工具
+RUN set -eux; \
+    apk add --no-cache \
+        arch-test \
+        file \
+        bash \
+        coreutils \
+        timeout
+
+# 构建标志
+ENV BUILD_FLAGS="-v -trimpath -ldflags '-d -w'"
+
+# 创建构建和测试脚本
+RUN set -eux; \
+    { \
+        echo '#!/usr/bin/env bash'; \
+        echo 'set -Eeuo pipefail -x'; \
+        echo 'eval "go build $BUILD_FLAGS -o /go/bin/gosu-$ARCH"'; \
+        echo 'file "/go/bin/gosu-$ARCH"'; \
+        echo 'if arch-test "$ARCH"; then'; \
+        echo '  try() { for (( i = 0; i < 30; i++ )); do if timeout 1s "$@"; then return 0; fi; done; return 1; }'; \
+        echo '  try "/go/bin/gosu-$ARCH" --version'; \
+        echo '  try "/go/bin/gosu-$ARCH" nobody id'; \
+        echo '  try "/go/bin/gosu-$ARCH" nobody ls -l /proc/self/fd'; \
+        echo 'fi'; \
+    } > /usr/local/bin/gosu-build-and-test.sh; \
+    chmod +x /usr/local/bin/gosu-build-and-test.sh
+
+# 关闭 CGO
+ENV CGO_ENABLED=0
+
+WORKDIR /go/src/github.com/tianon/gosu
+
+# 复制 Go 依赖文件并下载模块
+COPY go.mod go.sum ./
+RUN set -eux; \
+    go mod download; \
+    go mod verify
+
+# 复制源代码
+COPY *.go ./
+
+# 编译 gosu
+RUN ARCH=amd64 GOARCH=amd64 gosu-build-and-test.sh
+
+# 验证构建结果
+RUN set -eux; ls -lAFh /go/bin/gosu-*; file /go/bin/gosu-*
